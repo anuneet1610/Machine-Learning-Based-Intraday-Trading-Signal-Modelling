@@ -1,113 +1,489 @@
-# Machine Learning Based Intraday Trading Signal Modelling
+# Real-Time Intraday Trading Signal Platform
 
-# Problem
-It is very difficult for traders to gather real time information from multiple sources, analyse them, and take appropriate action. This can lead to loss of potential profits.
+A real-time machine learning system that combines live stock market data and financial news sentiment to generate intraday trading signals.
 
-# Approach
-We propose a ML based real time system which can ingest information from news sources and stock market in real time, and make predictions using XGBoost model. It uses various technical indicators to interpret patterns in the past stock price data. The technical indicators as well as the fundamental indicator (news data) are fed to the XGBoost model, which makes predictions.
+Built using **Python**, **Pathway**, **Kafka**, **ClickHouse**, and **XGBoost**.
 
-# Tech Stack
-1. Python
-2. Pathway (Python Library) (Used for building efficient data streaming systems)
-3. Kafka
-4. ClickHouse 
+---
 
-## User Guide
+## Overview
 
-### Requirements:
-1. Clickhouse Database: [https://clickhouse.com/docs/getting-started/quick-start/oss](https://clickhouse.com/docs/getting-started/quick-start/oss)
-2. Docker: [https://docs.docker.com/engine/install/](https://docs.docker.com/engine/install/)
-3. Python (3.12 or 3.13 preferred): [https://www.python.org](https://www.python.org)
+Financial markets generate massive amounts of information every second. Traders often struggle to continuously monitor:
 
-### Steps to run the project
+* Live stock price movements
+* Technical indicators
+* Breaking financial news
+* Market sentiment changes
 
-**1. Run the Clichouse Server:**  
-Wherever the clickhouse database file installed, in a terminal `cd` into that folder. And run:
-```bash
-$ ./clickhouse server
+By the time information is manually gathered, analyzed, and acted upon, potential trading opportunities may already be gone.
+
+This project addresses that problem by building an automated real-time intelligence pipeline that continuously ingests market data and news data, computes features, performs machine learning inference, and generates actionable trading alerts.
+
+---
+
+## Problem Statement
+
+Traders and investors rely on information from multiple sources to make decisions.
+
+These sources include:
+
+* Historical price movements
+* Technical indicators
+* News articles
+* Market sentiment
+
+Manually monitoring and combining these data streams in real time is difficult and inefficient.
+
+The objective of this project is to create a system capable of:
+
+1. Continuously ingesting real-time market and news data.
+2. Computing technical and sentiment-based features.
+3. Making machine learning predictions on incoming data.
+4. Generating alerts whenever significant price movement is predicted.
+
+---
+
+## System Architecture
+
+```text
+                   ┌──────────────────┐
+                   │  Stock Service   │
+                   └────────┬─────────┘
+                            │
+                            ▼
+                     Kafka Topics
+                            │
+                            ▼
+                ┌─────────────────────┐
+                │ Calculation Service │
+                │   (Pathway Stream)  │
+                └────────┬────────────┘
+                         │
+                         ▼
+                Technical Indicators
+                         │
+                         ▼
+                ┌─────────────────────┐
+                │    News Service     │
+                └────────┬────────────┘
+                         │
+                         ▼
+                  Sentiment Features
+                         │
+                         ▼
+                ┌─────────────────────┐
+                │  Decision Service   │
+                │  XGBoost Inference  │
+                └────────┬────────────┘
+                         │
+                         ▼
+                    Predictions
+                         │
+                         ▼
+                ┌─────────────────────┐
+                │  Backend Service    │
+                │ Firebase Alerts     │
+                └────────┬────────────┘
+                         │
+                         ▼
+                     End User
 ```
 
-In a new terminal window, go to the clickhouse directory and run the clickhouse client
-```bash
-$ ./clickhouse client
+---
+
+## Technology Stack
+
+### Core Technologies
+
+* Python
+* Pathway
+* Apache Kafka
+* ClickHouse
+* XGBoost
+* Docker
+
+### Additional Services
+
+* Firebase Cloud Messaging (FCM)
+* Logging Infrastructure
+
+---
+
+## Components
+
+### Stock Service
+
+Responsible for market data ingestion.
+
+**Functions:**
+
+* Streams stock market data
+* Publishes events to Kafka
+* Acts as the primary data source for downstream services
+
+---
+
+### Calculation Service
+
+Built using Pathway's streaming computation engine.
+
+**Functions:**
+
+* Consumes market data streams
+* Computes technical indicators
+* Performs rolling aggregations
+* Generates feature streams
+
+**Example Features:**
+
+* Returns
+* Moving averages
+* Volatility metrics
+* Momentum indicators
+* Price-based statistical features
+
+---
+
+### News Service
+
+Processes financial news streams.
+
+**Functions:**
+
+* Consumes incoming news events
+* Performs sentiment analysis
+* Generates sentiment scores
+* Publishes sentiment features
+* Merges the sentiment features with feature data, applying decaying logic
+
+---
+
+### Decision Service
+
+Hosts the machine learning inference engine.
+
+**Functions:**
+
+* Consumes technical features and sentiment features
+* Runs trained XGBoost models
+* Produces trading predictions
+
+The service consists of 2 models:
+
+* Big Move Predictor: Predicts the probability of a change of more than 20% in price
+* Up/Down Predictor: Predicts the probability of the stock price going up
+
+to estimate future intraday price movement.
+
+---
+
+### Backend Service
+
+Responsible for notification delivery.
+
+**Functions:**
+
+* Consumes prediction outputs
+* Detects significant signals
+* Sends alerts through Firebase Cloud Messaging
+
+Alerts are generated whenever the model predicts a price movement exceeding configured thresholds.
+
+---
+
+### ClickHouse
+
+Acts as the analytical storage layer.
+
+**Functions:**
+
+* Stores processed market data
+* Stores sentiment streams
+* Stores prediction outputs
+* Supports fast analytical queries
+
+---
+
+## Machine Learning Pipeline
+
+### Input Features
+
+#### Technical Features
+
+Generated from historical market data:
+
+* Lagged returns
+* Rolling statistics
+* Volatility measures
+* Momentum indicators
+* Trend-based features
+
+#### Fundamental Features
+
+Generated from financial news:
+
+* Sentiment scores
+* News impact indicators
+* Aggregated sentiment signals
+* Decaying sentiment across time
+
+---
+
+### Model
+
+The prediction engine uses:
+
+* **XGBoost**
+
+The model receives both technical and sentiment features and predicts future intraday price movement.
+
+---
+
+## Real-Time Data Flow
+
+1. Market data enters through the Stock Service.
+2. Kafka distributes events across services.
+3. Calculation Service computes technical indicators.
+4. News Service generates sentiment features.
+5. Decision Service performs model inference.
+6. Predictions are stored and published.
+7. Backend Service sends trading alerts.
+8. Data is persisted in ClickHouse for analysis.
+
+---
+
+## Model Evaluation
+
+Several XGBoost models were trained and evaluated using historical market and sentiment data. While the predictive performance remains modest (which is expected for short-horizon market forecasting), the project successfully demonstrates:
+
+- Real-time feature generation
+- Streaming inference pipelines
+- Integration of technical and sentiment signals
+- Automated alert generation
+
+---
+
+## Repository Structure
+
+```text
+.
+├── backend/
+├── calc_service/
+├── decision_service/
+├── infra/
+├── news_service/
+├── stock_service/
+├── logs/
+└── README.md
 ```
 
-**2. Creating virtual envenvironments**  
-In  all the directories present with this README file, there are requirements files and some python files, and also the files for environment variables. Open CLI in each folder and run the following commands to create virtual environments, and install the requirments.
+---
+
+# Setup Guide
+
+## Requirements
+
+### 1. ClickHouse
+
+Install ClickHouse:
+
+https://clickhouse.com/docs/getting-started/quick-start/oss
+
+### 2. Docker
+
+Install Docker:
+
+https://docs.docker.com/engine/install/
+
+### 3. Python
+
+Recommended versions:
+
+* Python 3.12
+* Python 3.13
+
+Download:
+
+https://www.python.org
+
+---
+
+## Step 1: Start ClickHouse Server
+
+Navigate to your ClickHouse installation directory.
+
+Start the server:
 
 ```bash
-$ python3 -m venv env
-$ source env/bin/activate # for windows, env\Scripts\activate.ps1 (for powershell) or activate.bat (for command prompt)
-$ pip3 install -r requirements.txt
+./clickhouse server
 ```
 
-**3. Creating the database and schema**  
-Go to the `infra` directory, make sure that the virtual environment is activated and then run the following command:
+Open a second terminal and start the client:
+
 ```bash
-$ python3 main.py
+./clickhouse client
 ```
-This will create the `market_data` clickhouse database and its required tables. You can verify this by going to the terminal window where clickhouse client is running and then run,
+
+---
+
+## Step 2: Create Virtual Environments
+
+Inside each service directory:
+
 ```bash
-$ SHOW databases;
+python3 -m venv env
+source env/bin/activate
 ```
 
-The output should include `market_data` database
+Windows PowerShell:
 
-and then run
+```powershell
+env\Scripts\activate.ps1
+```
+
+Install dependencies:
+
 ```bash
-$ USE market_data;
-$ SHOW tables;
+pip install -r requirements.txt
 ```
 
-The output should be names of 4 tables:
-1. final_table
-2. kafka_input
-3. mv_kafka_to_final
-4. sentiment_stream
+---
 
-**4. Run the kafka server**
-Go back to `infra` service and then run:
+## Step 3: Create Database Schema
+
+Navigate to:
+
+```text
+infra/
+```
+
+Run:
+
 ```bash
-$ docker compose up # or sudo docker compose up if permission is denied
+python3 main.py
 ```
-This will start the kafka server
 
-**5. Running the microservices**
-The microservices can be run in any order, except the fact that stock service must be run in the end.
-We recommend to run the services in the alphabetical order itself.
+This creates the `market_data` database and required tables.
 
-So go to backend directory, make sure virtual env is activated and run
+Verify:
+
+```sql
+SHOW DATABASES;
+```
+
+Expected output should include:
+
+```text
+market_data
+```
+
+Then run:
+
+```sql
+USE market_data;
+SHOW TABLES;
+```
+
+Expected tables:
+
+```text
+final_table
+kafka_input
+mv_kafka_to_final
+sentiment_stream
+```
+
+---
+
+## Step 4: Start Kafka
+
+Navigate to:
+
+```text
+infra/
+```
+
+Run:
+
 ```bash
-$ python3 main.py
+docker compose up
 ```
 
-This won't output anything yet, but you can see a logs folder where we will store all the logs
+If necessary:
 
-Then go to calc_service, with respective env activated and run
 ```bash
-$ python3 main.py
+sudo docker compose up
 ```
 
-This will take some time to run, and it will start the pathway computational stream but might show errors as we are not pushing anything to the required kafka topic yet. That will be done in the end in the stock service
+---
 
-Then go to decision service, with respective env activated and run
+## Step 5: Start Microservices
+
+The services may be started in any order, but **Stock Service should be started last**.
+
+Recommended order:
+
+### Backend Service
+
 ```bash
-$ python3 xgboost_mdl_inf.py
+python3 main.py
 ```
 
-This will output `Waiting for messages...`
+Logs will be written to the logs directory.
 
-Next go to news service, and do the same drill. Activate environment, and run:
+---
+
+### Calculation Service
+
 ```bash
-$ python3 main.py
+python3 main.py
 ```
-This will wait for timestamps, which are required from calculation service which in turn depends on stock service.
 
-So finally, we go to the stock service, activate the environment and run
+This starts the Pathway streaming pipeline.
+
+---
+
+### Decision Service
+
 ```bash
-$ python3 main.py
+python3 xgboost_mdl_inf.py
 ```
 
-This will take few seconds to run, but as soon as it starts pushing to kafka topic, outputs should start becoming visible in all the other microservices as well.
+Expected output:
 
-The main output that we won't to see is the alert messages being sent through Firebase Cloud Messagin service. This output might not be as frequent as outputs of other services, but it should send whenever the decision service finds a change of more than 2%, and pushes to the alert topic. The output of backend service would start with *'Alert sent'*.
+```text
+Waiting for messages...
+```
+
+---
+
+### News Service
+
+```bash
+python3 main.py
+```
+
+The service will wait for timestamps generated from upstream services.
+
+---
+
+### Stock Service
+
+```bash
+python3 main.py
+```
+
+Once market events begin flowing, all downstream services will start processing data.
+
+---
+
+## Future Improvements
+
+* Automated model retraining
+* Portfolio management layer
+* Risk management engine
+* Multi-asset support
+* Real-time monitoring dashboards
+* Advanced feature engineering
+* Latency monitoring and observability
+* Trade execution integration
