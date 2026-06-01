@@ -1,4 +1,4 @@
-# Real-Time Intraday Trading Signal Platform
+# Machine Learning Based Intraday Trading Signal Modelling
 
 A real-time machine learning system that combines live stock market data and financial news sentiment to generate intraday trading signals.
 
