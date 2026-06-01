@@ -121,6 +121,8 @@ Responsible for market data ingestion.
 * Publishes events to Kafka
 * Acts as the primary data source for downstream services
 
+The data streamed can be accessed through this link: https://www.kaggle.com/datasets/anuneetgupta1610/high-frequency-stock-market-data
+
 ---
 
 ### Calculation Service
