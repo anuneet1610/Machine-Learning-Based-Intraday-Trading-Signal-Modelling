@@ -1,6 +1,0 @@
-kafka-python
-xgboost
-numpy
-clickhouse-driver
-scikit-learn
-pandas
