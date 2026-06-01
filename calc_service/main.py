@@ -9,9 +9,10 @@ This service performs real-time technical analysis on stock market data:
 - MACD (Moving Average Convergence Divergence) signal generation
 - Trading signal generation based on multiple indicators
 
-Input: Kafka topic 'stock_table' with stock quote data
+Input: Kafka topic 'stock_price_data' with stock quote data
 Output: Kafka topic 'stock_calculation_table' with enriched technical indicators
 """
+
 import pathway as pw
 import math
 import os
@@ -76,7 +77,7 @@ if not kafka_broker:
     raise ValueError("KAFKA_BROKER environment variable is required")
 
 logger.info(f"Connecting to Kafka broker: {kafka_broker}")
-logger.info("Reading from Kafka topic 'stock_table'...")
+logger.info("Reading from Kafka topic 'stock_price_data'...")
 
 try:
     quotes = pw.io.kafka.read(
@@ -85,7 +86,7 @@ try:
             "group.id": "pathway-group",
             "auto.offset.reset": "earliest",  # Start from beginning if no offset exists
         },
-        topic="stock_table",
+        topic="stock_price_data",
         format="json",
         schema=QuoteSchema,
         json_field_paths={
@@ -95,7 +96,7 @@ try:
             "low": "/value/low",
             "close": "/value/close",
             "volume": "/value/volume",
-            "timestamp": "/value/timestamp",
+            "timestamp": "/value/datetime",
             "ts_ms": "/value/ts_ms"
         }
     )
@@ -122,12 +123,12 @@ quotes = quotes.with_columns(
 # - Duration: 150 minutes (30 periods * 5 min) - window contains 30 data points
 # - Cutoff: 175 minutes - maximum delay before window is considered complete
 #
-# GARCH Model Parameters:
-# - omega: Long-term variance (1e-6)
-# - alpha: Weight for recent squared residuals (0.05)
-# - beta: Weight for previous variance (0.93)
-# - phi: AR coefficient for ARMA model (0.6)
-# - theta: MA coefficient for ARMA model (0.3)
+# GARCH Model Parameters (matching calc_metrics_py.py):
+# - omega: Long-term variance (0.007)
+# - alpha: Weight for recent squared residuals (0.501)
+# - beta: Weight for previous variance (0.499)
+# - phi: AR coefficient for ARMA model (-0.01)
+# - theta: MA coefficient for ARMA model (-0.01)
 logger.info("Creating sliding window for GARCH volatility and ARMA return forecasting")
 logger.debug("Window: 30 periods (150 min), hop: 5 min, cutoff: 175 min")
 
@@ -144,7 +145,7 @@ windowed_combined = quotes.windowby(
     price_close_tuples=pw.reducers.sorted_tuple(pw.make_tuple(pw.this.ts_ms, pw.this.close)),
     cnt=pw.reducers.count(),  # Track number of data points in window
     start_ts=pw.this._pw_window_start,
-    end_ts=pw.this._pw_window_end,
+    latest_ts=pw.reducers.max(pw.this.ts_ms),
 )
 
 logger.info("GARCH window created - waiting for sufficient data points...")
@@ -153,15 +154,15 @@ logger.info("GARCH window created - waiting for sufficient data points...")
 # ============================================================================
 @pw.udf
 def calculate_all_metrics(price_tuples: tuple,
-                          omega: float = 1e-6,
-                          alpha: float = 0.05,
-                          beta: float = 0.93,
-                          phi: float = 0.6,
-                          theta: float = 0.3,
-                          init_sigma: float = 1e-3) -> tuple[float, float, float, float, float, float]:
+                          omega: float = 0.007,
+                          alpha: float = 0.501,
+                          beta: float = 0.499,
+                          phi: float = -0.01,
+                          theta: float = -0.01,
+                          init_sigma: float = 0.2) -> tuple[float, float, float, float, float, float]:
     """
     Calculate previous close, returns, GARCH volatility forecast, and ARMA return forecast.
-    
+
     This function combines multiple calculations to optimize performance:
     - Previous period's closing price
     - Current period's log return
@@ -169,16 +170,16 @@ def calculate_all_metrics(price_tuples: tuple,
     - ARMA(1,1) return forecast
     - Current volatility estimate (sigma_t)
     - Current residual (actual return - ARMA forecast)
-    
+
     Args:
         price_tuples: List of (timestamp_ms, price) tuples, sorted by timestamp
-        omega: GARCH long-term variance parameter (default: 1e-6)
-        alpha: GARCH weight for recent squared residuals (default: 0.05)
-        beta: GARCH weight for previous variance (default: 0.93)
-        phi: ARMA autoregressive coefficient (default: 0.6)
-        theta: ARMA moving average coefficient (default: 0.3)
+        omega: GARCH long-term variance parameter (default: 0.007)
+        alpha: GARCH weight for recent squared residuals (default: 0.501)
+        beta: GARCH weight for previous variance (default: 0.499)
+        phi: ARMA autoregressive coefficient (default: -0.01)
+        theta: ARMA moving average coefficient (default: -0.01)
         init_sigma: Initial volatility estimate (default: 1e-3)
-    
+
     Returns:
         Tuple of (prev_close, current_ret, sigma_forecast, arma_forecast, sigma_t, resid):
         - prev_close: Previous period's closing price
@@ -187,7 +188,7 @@ def calculate_all_metrics(price_tuples: tuple,
         - arma_forecast: Forecasted return for next period
         - sigma_t: Current period's volatility estimate
         - resid: Current period's residual (actual - forecasted return)
-    
+
     Note:
         Returns default values if insufficient data is available.
         GARCH model: sigma^2(t+1) = omega + alpha * resid^2(t) + beta * sigma^2(t)
@@ -195,7 +196,7 @@ def calculate_all_metrics(price_tuples: tuple,
     """
     if not price_tuples or len(price_tuples) == 0:
         logger.warning("calculate_all_metrics: Empty price_tuples, returning default values")
-        return (0.0, 0.0, init_sigma, 0.0, init_sigma, 0.0)
+        return (0.0, 0.0, 0.2, 0.0, 0.2, 0.0)
 
     # Extract prices from tuples (ignore timestamps for calculation)
     prices = [p for (_, p) in price_tuples]
@@ -216,7 +217,7 @@ def calculate_all_metrics(price_tuples: tuple,
     # Need at least 2 prices to calculate returns
     if len(prices) < 2:
         logger.warning("calculate_all_metrics: Insufficient prices for GARCH calculation")
-        return (prev_close, current_ret, init_sigma, 0.0, init_sigma, 0.0)
+        return (prev_close, current_ret, 0.2, 0.0, 0.2, 0.0)
 
     # Calculate log returns for all price pairs in the window
     rets = []
@@ -227,11 +228,9 @@ def calculate_all_metrics(price_tuples: tuple,
             rets.append(0.0)
             logger.warning(f"calculate_all_metrics: Invalid price pair at index {i}: {prices[i-1]}, {prices[i]}")
 
-    # Initialize GARCH model with sample variance
-    # Use mean return and variance of historical returns as starting point
-    mean_ret = sum(rets) / len(rets) if rets else 0.0
-    var = sum((x - mean_ret) ** 2 for x in rets) / len(rets) if rets else init_sigma * init_sigma
-    last_sigma2 = var if var > 0 else init_sigma * init_sigma
+    # Initialize GARCH model with sample variance (matching calc_metrics_py: np.var)
+    var = sum(x ** 2 for x in rets) / len(rets) if rets else 0.2 * 0.2
+    last_sigma2 = var if var > 0 else 0.2 * 0.2
 
     # Initialize ARMA model state
     prev_ret = rets[0] if rets else 0.0
@@ -241,16 +240,16 @@ def calculate_all_metrics(price_tuples: tuple,
     # This implements the recursive GARCH(1,1) and ARMA(1,1) updates
     for i in range(1, len(rets)):
         cur_ret = rets[i]
-        
+
         # ARMA forecast: ret(t) = phi * ret(t-1) + theta * resid(t-1)
         pred = phi * prev_ret + theta * last_resid
-        
+
         # Residual: actual return - ARMA forecast
         resid = cur_ret - pred
-        
+
         # GARCH variance update: sigma^2(t) = omega + alpha * resid^2(t-1) + beta * sigma^2(t-1)
         sigma2 = omega + alpha * (last_resid ** 2) + beta * last_sigma2
-        
+
         # Update state for next iteration
         last_sigma2 = sigma2
         last_resid = resid
@@ -258,11 +257,15 @@ def calculate_all_metrics(price_tuples: tuple,
 
     # Forecast next period's volatility and return
     sigma_forecast2 = omega + alpha * (last_resid ** 2) + beta * last_sigma2
+    sigma_forecast = math.sqrt(sigma_forecast2)
     arma_forecast = phi * prev_ret + theta * last_resid
 
     # Return all metrics (convert variance to standard deviation)
-    return (prev_close, current_ret, math.sqrt(sigma_forecast2), arma_forecast, math.sqrt(last_sigma2), last_resid)
+    return (prev_close, current_ret, sigma_forecast, arma_forecast, sigma_forecast, last_resid)
 
+windowed_combined = windowed_combined.filter(pw.this.cnt >= 2).with_columns(
+    metrics=calculate_all_metrics(pw.this.price_close_tuples)
+)
 
 # Apply GARCH and ARMA calculations to windowed data
 logger.info("Applying GARCH volatility and ARMA return forecasting calculations")
@@ -284,7 +287,7 @@ windowed_combined = windowed_combined.with_columns(
     arma_forecast=pw.this.arma_forecast,
     sigma_t=pw.this.sigma_t,
     resid=pw.this.resid,
-    end_ts=pw.this.end_ts,  # Window end timestamp for join operation
+    end_ts=pw.this.latest_ts,  # Window end timestamp for join operation
 )
 
 logger.info("Joining GARCH/ARMA metrics back to original quotes using asof_join")
@@ -338,26 +341,26 @@ enriched_with_garch = enriched_with_garch_join.select(
 def rsi_with_signal(price_tuples: tuple) -> tuple[float, int]:
     """
     Calculate RSI (Relative Strength Index) and generate trading signals.
-    
+
     RSI is a momentum oscillator that measures the speed and magnitude of price changes.
     Values range from 0 to 100:
     - RSI > 70: Overbought (potential sell signal)
     - RSI < 30: Oversold (potential buy signal)
     - RSI = 50: Neutral
-    
+
     Trading Signals:
     - rsi_timing = 2: Strong buy signal (rising RSI from oversold < 40)
     - rsi_timing = -2: Strong sell signal (falling RSI from overbought > 70)
     - rsi_timing = 0: No signal
-    
+
     Args:
         price_tuples: List of (timestamp_ms, price) tuples, sorted by timestamp
-    
+
     Returns:
         Tuple of (rsi, rsi_timing):
         - rsi: Current RSI value (0-100)
         - rsi_timing: Trading signal (-2, -1, 0, 1, 2)
-    
+
     Note:
         Requires at least 14 periods for standard RSI calculation.
         Returns neutral RSI (50.0) and no signal (0) if insufficient data.
@@ -416,15 +419,16 @@ def rsi_with_signal(price_tuples: tuple) -> tuple[float, int]:
     rsi_timing = 0
     if len(rsi_history) >= 3:
         r0, r1, r2 = rsi_history[-1], rsi_history[-2], rsi_history[-3]
-        
+
         # Detect rising trend: RSI increasing over last 3 periods
         rising = (r0 > r1) and (r1 > r2)
-        
+
         # Buy signal: Rising RSI from oversold levels (< 40)
         reversal_buy = min(rsi_history) < 40
-        
-        # Sell signal: Falling RSI from overbought levels (> 70)
-        reversal_sell = (max(r0, r1, r2) > 70) and (r2 < r1 < r0)
+
+        # Sell signal: RSI was overbought (>70) and is now falling
+        # r2 is oldest, r0 is newest — falling means r2 > r1 > r0
+        reversal_sell = (max(r0, r1, r2) > 70) and (r2 > r1) and (r1 > r0)
 
         if rising and reversal_buy:
             rsi_timing = 2  # Strong buy signal
@@ -456,7 +460,7 @@ window_rsi_combined = enriched_with_garch.windowby(
 ).reduce(
     symbol=pw.this._pw_instance,
     price_tuples=pw.reducers.sorted_tuple(pw.make_tuple(pw.this.ts_ms, pw.this.close)),
-    end_ts=pw.this._pw_window_end,
+    latest_ts=pw.reducers.max(pw.this.ts_ms),
 )
 
 # Apply RSI calculation and extract timing signal
@@ -467,7 +471,7 @@ window_rsi_combined = window_rsi_combined.with_columns(
 ).select(
     symbol=pw.this.symbol,
     rsi_timing=pw.this.rsi_timing,
-    end_ts=pw.this.end_ts,
+    latest_ts=pw.this.latest_ts,
 )
 
 # Join RSI signals back to enriched quotes
@@ -476,7 +480,7 @@ logger.debug("Joining RSI signals back to enriched quotes")
 enriched_with_garch_rsi = enriched_with_garch.asof_join(
     window_rsi_combined,
     enriched_with_garch.ts_ms,
-    window_rsi_combined.end_ts,
+    window_rsi_combined.latest_ts,
     enriched_with_garch.symbol == window_rsi_combined.symbol,
     how=pw.JoinMode.LEFT,
 )
@@ -512,21 +516,21 @@ enriched_with_garch = enriched_with_garch_rsi.select(
 def calculate_ema_macd_signal(price_tuples: tuple) -> tuple[float, float, float, float, float, float, float]:
     """
     Calculate multiple EMAs, MACD, and MACD signal line together.
-    
+
     EMAs calculated:
     - EMA_12: 12-period EMA (fast)
     - EMA_26: 26-period EMA (slow, for MACD)
     - EMA_20: 20-period EMA (short-term trend)
     - EMA_50: 50-period EMA (medium-term trend)
     - EMA_200: 200-period EMA (long-term trend)
-    
+
     MACD (Moving Average Convergence Divergence):
     - MACD = EMA_12 - EMA_26
     - Signal = 9-period EMA of MACD
-    
+
     Args:
         price_tuples: List of (timestamp_ms, price) tuples, sorted by timestamp
-    
+
     Returns:
         Tuple of (ema_12, ema_26, ema_20, ema_50, ema_200, macd, signal):
         - ema_12: 12-period exponential moving average
@@ -536,7 +540,7 @@ def calculate_ema_macd_signal(price_tuples: tuple) -> tuple[float, float, float,
         - ema_200: 200-period exponential moving average
         - macd: MACD line (EMA_12 - EMA_26)
         - signal: MACD signal line (9-period EMA of MACD)
-    
+
     Note:
         EMA smoothing factor alpha = 2 / (n + 1) where n is the period.
         Returns zeros if insufficient data is available.
@@ -550,15 +554,15 @@ def calculate_ema_macd_signal(price_tuples: tuple) -> tuple[float, float, float,
     def calc_ema(prices, n, alpha):
         """
         Calculate Exponential Moving Average (EMA).
-        
+
         EMA gives more weight to recent prices using a smoothing factor (alpha).
         Formula: EMA_t = alpha * Price_t + (1 - alpha) * EMA_{t-1}
-        
+
         Args:
             prices: List of prices
             n: Period for EMA
             alpha: Smoothing factor (typically 2 / (n + 1))
-        
+
         Returns:
             EMA value
         """
@@ -606,20 +610,20 @@ def calculate_ema_macd_signal(price_tuples: tuple) -> tuple[float, float, float,
 # - Hop: 5 minutes - window slides every 5 minutes
 # - Cutoff: 250 minutes - maximum delay before window is considered complete
 logger.info("Creating sliding window for EMA and MACD calculation")
-logger.debug("EMA Window: 210 minutes, hop: 5 min, cutoff: 250 min")
+logger.debug("EMA Window: 1050 minutes (210 periods), hop: 5 min, cutoff: 1100 min")
 
 windowed_ema_all = enriched_with_garch.windowby(
     enriched_with_garch.ts_ms,
     window=pw.temporal.sliding(
         hop=5 * 60_000,  # 5 minutes
-        duration=210 * 60_000,  # 210 minutes (42 periods) - buffer for EMA_200
+        duration=210 * 5 * 60_000,  # 210 periods = 1050 minutes (sufficient for EMA_200)
     ),
     instance=enriched_with_garch.symbol,  # Group by stock symbol
-    behavior=pw.temporal.common_behavior(cutoff=250 * 60_000),  # 250 minutes max delay
+    behavior=pw.temporal.common_behavior(cutoff=220 * 5 * 60_000),  # 1100 minutes max delay
 ).reduce(
     symbol=pw.this._pw_instance,
     prices=pw.reducers.sorted_tuple(pw.make_tuple(pw.this.ts_ms, pw.this.close)),
-    end_ts=pw.this._pw_window_end,
+    latest_ts=pw.reducers.max(pw.this.ts_ms),
 )
 
 # Apply EMA/MACD calculation and extract individual metrics
@@ -643,7 +647,7 @@ windowed_ema_all = windowed_ema_all.with_columns(
     ema_200=pw.this.ema_200,
     macd=pw.this.macd,
     signal=pw.this.signal,
-    end_ts=pw.this.end_ts,
+    latest_ts=pw.this.latest_ts,
 )
 
 # Join EMA/MACD metrics back to enriched quotes
@@ -652,7 +656,7 @@ logger.debug("Joining EMA/MACD metrics back to enriched quotes")
 enriched_final_join = enriched_with_garch.asof_join(
     windowed_ema_all,
     enriched_with_garch.ts_ms,
-    windowed_ema_all.end_ts,
+    windowed_ema_all.latest_ts,
     enriched_with_garch.symbol == windowed_ema_all.symbol,
     how=pw.JoinMode.LEFT,
 )
@@ -685,6 +689,118 @@ enriched_final = enriched_final_join.select(
 logger.info("EMA/MACD enrichment completed")
 
 # ============================================================================
+# Lagged Returns (ret_1, ret_2, ret_3, ret_6) and Rolling Volatility (vol_10)
+# ============================================================================
+# These are computed over a window covering the last 10 periods (50 minutes).
+# ret_N = log return N periods ago (from the most recent close in the window)
+# vol_10 = std deviation of log returns over last 10 periods
+
+@pw.udf
+def calculate_lagged_returns_vol(price_tuples: tuple) -> tuple[float, float, float, float, float]:
+    """
+    Calculate lagged log returns and rolling volatility from a price window.
+
+    Args:
+        price_tuples: Sorted (timestamp_ms, price) tuples
+
+    Returns:
+        Tuple of (ret_1, ret_2, ret_3, ret_6, vol_10):
+        - ret_N: log return N periods ago relative to the most recent close
+        - vol_10: std deviation of log returns over last 10 periods
+    """
+    if len(price_tuples) < 2:
+        return (0.0, 0.0, 0.0, 0.0, 0.0)
+
+    prices = [p for (_, p) in price_tuples]
+
+    # Compute log returns for successive pairs
+    log_rets = []
+    for i in range(1, len(prices)):
+        if prices[i - 1] > 0 and prices[i] > 0:
+            log_rets.append(math.log(prices[i] / prices[i - 1]))
+        else:
+            log_rets.append(0.0)
+
+    def get_ret(lag):
+        """Return log_rets[-lag] if available, else 0.0"""
+        if len(log_rets) >= lag:
+            return log_rets[-lag]
+        return 0.0
+
+    ret_1 = get_ret(1)
+    ret_2 = get_ret(2)
+    ret_3 = get_ret(3)
+    ret_6 = get_ret(6)
+
+    # vol_10: std dev of last 10 log returns
+    window_rets = log_rets[-10:] if len(log_rets) >= 10 else log_rets
+    if len(window_rets) >= 2:
+        mean = sum(window_rets) / len(window_rets)
+        variance = sum((r - mean) ** 2 for r in window_rets) / (len(window_rets) - 1)
+        vol_10 = math.sqrt(variance)
+    else:
+        vol_10 = 0.0
+
+    return (ret_1, ret_2, ret_3, ret_6, vol_10)
+
+
+
+logger.info("Creating sliding window for lagged returns and volatility")
+logger.debug("Lagged-returns window: 7 periods (35 min), hop: 5 min, cutoff: 60 min")
+
+windowed_lagged = enriched_final.windowby(
+    enriched_final.ts_ms,
+    window=pw.temporal.sliding(
+        hop=5 * 60_000,       # 5 minutes
+        duration=11 * 5 * 60_000,  # 11 periods covers ret_6 + vol_10 lookback comfortably
+    ),
+    instance=enriched_final.symbol,
+    behavior=pw.temporal.common_behavior(cutoff=15 * 5 * 60_000),
+).reduce(
+    symbol=pw.this._pw_instance,
+    price_tuples=pw.reducers.sorted_tuple(pw.make_tuple(pw.this.ts_ms, pw.this.close)),
+    latest_ts=pw.reducers.max(pw.this.ts_ms),
+)
+
+windowed_lagged = windowed_lagged.with_columns(
+    lagged_result=calculate_lagged_returns_vol(windowed_lagged.price_tuples)
+).with_columns(
+    ret_1=pw.this.lagged_result[0],
+    ret_2=pw.this.lagged_result[1],
+    ret_3=pw.this.lagged_result[2],
+    ret_6=pw.this.lagged_result[3],
+    vol_10=pw.this.lagged_result[4],
+).select(
+    symbol=pw.this.symbol,
+    ret_1=pw.this.ret_1,
+    ret_2=pw.this.ret_2,
+    ret_3=pw.this.ret_3,
+    ret_6=pw.this.ret_6,
+    vol_10=pw.this.vol_10,
+    latest_ts=pw.this.latest_ts,
+)
+
+logger.debug("Joining lagged returns and volatility back to enriched data")
+enriched_final_lagged_join = enriched_final.asof_join(
+    windowed_lagged,
+    enriched_final.ts_ms,
+    windowed_lagged.latest_ts,
+    enriched_final.symbol == windowed_lagged.symbol,
+    how=pw.JoinMode.LEFT,
+)
+
+enriched_final = enriched_final_lagged_join.select(
+    *enriched_final,
+    ret_1=pw.coalesce(windowed_lagged.ret_1, 0.0),
+    ret_2=pw.coalesce(windowed_lagged.ret_2, 0.0),
+    ret_3=pw.coalesce(windowed_lagged.ret_3, 0.0),
+    ret_6=pw.coalesce(windowed_lagged.ret_6, 0.0),
+    vol_10=pw.coalesce(windowed_lagged.vol_10, 0.0),
+)
+logger.info("Lagged returns and volatility enrichment completed")
+
+
+# ============================================================================
 # Derived Metrics Calculation
 # ============================================================================
 # Calculate additional trading indicators and filters based on EMA, MACD, and GARCH metrics
@@ -694,19 +810,19 @@ enriched_final = enriched_final.with_columns(
     # MACD Histogram: difference between MACD line and signal line
     # Positive histogram = bullish momentum, Negative = bearish momentum
     histogram=enriched_final.macd - enriched_final.signal,
-    
+
     # EMA Trend Filters: determine short-term trend direction
     # Trend up: EMA_20 > EMA_50 (bullish short-term trend)
     # Trend down: EMA_20 < EMA_50 (bearish short-term trend)
     ema_trend_filter_trend_up=enriched_final.ema_20 > enriched_final.ema_50,
     ema_trend_filter_trend_down=enriched_final.ema_20 < enriched_final.ema_50,
-    
+
     # Long-term Bias: determine long-term trend direction
     # Trend up: Price > EMA_200 (bullish long-term trend)
     # Trend down: Price < EMA_200 (bearish long-term trend)
     long_term_bias_trend_up=enriched_final.close > enriched_final.ema_200,
     long_term_bias_trend_down=enriched_final.close < enriched_final.ema_200,
-    
+
     # Risk-Adjusted Return: Sharpe-like ratio
     # Higher values indicate better risk-adjusted expected returns
     risk_adj_ret=pw.if_else(
@@ -714,20 +830,12 @@ enriched_final = enriched_final.with_columns(
         enriched_final.arma_forecast / enriched_final.sigma_forecast,
         0.0
     ),
-    
+
     # Simple directional signals based on ARMA forecast
     # Long signal: positive expected return
     # Short signal: negative expected return
     long_signal=(enriched_final.arma_forecast > 0),
-    short_signal=(enriched_final.arma_forecast < 0),
-    
-    # Percentage change from previous period
-    # Used for tracking price movements
-    pct_change=pw.if_else(
-        (enriched_final.prev_close > 0),
-        ((enriched_final.close - enriched_final.prev_close) / enriched_final.prev_close) * 100,
-        0.0
-    )
+    short_signal=(enriched_final.arma_forecast < 0)
 )
 
 # ============================================================================
@@ -755,7 +863,7 @@ windowed_histogram = enriched_final.windowby(
 ).reduce(
     symbol=pw.this._pw_instance,
     histogram_values=pw.reducers.sorted_tuple(pw.make_tuple(pw.this.ts_ms, pw.this.histogram)),
-    end_ts=pw.this._pw_window_end,
+    latest_ts=pw.reducers.max(pw.this.ts_ms),
 )
 
 
@@ -763,10 +871,10 @@ windowed_histogram = enriched_final.windowby(
 def get_prev_histogram(values: tuple) -> float | None:
     """
     Extract previous period's histogram value from sorted tuple.
-    
+
     Args:
         values: Sorted tuple of (timestamp_ms, histogram_value) pairs
-    
+
     Returns:
         Previous histogram value (second-to-last) or None if insufficient data
     """
@@ -781,7 +889,7 @@ windowed_histogram = windowed_histogram.with_columns(
 ).select(
     symbol=pw.this.symbol,
     histogram_prev=pw.this.histogram_prev,
-    end_ts=pw.this.end_ts,
+    latest_ts=pw.this.latest_ts,
 )
 
 # Join previous histogram value back to enriched data
@@ -789,7 +897,7 @@ logger.debug("Joining previous histogram values back to enriched quotes")
 enriched_final_hist = enriched_final.asof_join(
     windowed_histogram,
     enriched_final.ts_ms,
-    windowed_histogram.end_ts,
+    windowed_histogram.latest_ts,
     enriched_final.symbol == windowed_histogram.symbol,
     how=pw.JoinMode.LEFT,
 )
@@ -852,6 +960,78 @@ enriched_final = enriched_final.with_columns(
 logger.info("MACD signal classification completed")
 
 
+# ============================================================================
+# Temporal Features
+# ============================================================================
+# Parse the timestamp string and compute cyclical time encodings.
+# These replicate the features used during XGBoost training:
+#   hour, day_of_week, day_of_month, month, quarter, year
+#   hour_sin, hour_cos, day_sin, day_cos, month_sin, month_cos
+#
+# Assumes timestamp format: "YYYY-MM-DD HH:MM:SS" (as stored in the Kafka messages)
+logger.info("Computing temporal features from timestamp")
+
+@pw.udf
+def parse_temporal_features(ts: str) -> tuple[int, int, int, int, int, int, float, float, float, float, float, float]:
+    """
+    Parse a timestamp string and return cyclical temporal features.
+
+    Args:
+        ts: Timestamp string in 'YYYY-MM-DD HH:MM:SS' or ISO-8601 format
+
+    Returns:
+        Tuple of (hour, day_of_week, day_of_month, month, quarter, year,
+                  hour_sin, hour_cos, day_sin, day_cos, month_sin, month_cos)
+    """
+    import datetime
+
+    # Try parsing common formats
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%SZ"):
+        try:
+            dt = datetime.datetime.strptime(ts[:19], fmt[:len(fmt)])
+            break
+        except ValueError:
+            continue
+    else:
+        # Fallback: return zeros if parsing fails
+        return (0, 0, 0, 0, 0, 0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0)
+
+    hour        = dt.hour
+    dow         = dt.weekday()       # 0 = Monday
+    dom         = dt.day
+    month       = dt.month
+    quarter     = (month - 1) // 3 + 1
+    year        = dt.year
+
+    hour_sin    = math.sin(2 * math.pi * hour  / 24)
+    hour_cos    = math.cos(2 * math.pi * hour  / 24)
+    day_sin     = math.sin(2 * math.pi * dow   / 7)
+    day_cos     = math.cos(2 * math.pi * dow   / 7)
+    month_sin   = math.sin(2 * math.pi * month / 12)
+    month_cos   = math.cos(2 * math.pi * month / 12)
+
+    return (hour, dow, dom, month, quarter, year,
+            hour_sin, hour_cos, day_sin, day_cos, month_sin, month_cos)
+
+
+enriched_final = enriched_final.with_columns(
+    _temporal=parse_temporal_features(enriched_final.timestamp)
+).with_columns(
+    hour        =pw.this._temporal[0],
+    day_of_week =pw.this._temporal[1],
+    day_of_month=pw.this._temporal[2],
+    month       =pw.this._temporal[3],
+    quarter     =pw.this._temporal[4],
+    year        =pw.this._temporal[5],
+    hour_sin    =pw.this._temporal[6],
+    hour_cos    =pw.this._temporal[7],
+    day_sin     =pw.this._temporal[8],
+    day_cos     =pw.this._temporal[9],
+    month_sin   =pw.this._temporal[10],
+    month_cos   =pw.this._temporal[11],
+)
+logger.info("Temporal features computed")
+
 
 # ============================================================================
 # Final Output Table Selection
@@ -865,18 +1045,41 @@ final_table = enriched_final.select(
     timestamp=enriched_final.timestamp,
     ts_ms=enriched_final.ts_ms,
     close=enriched_final.close,
+    # GARCH / ARMA
     sigma_forecast=enriched_final.sigma_forecast,
     arma_forecast=enriched_final.arma_forecast,
+    # EMA trend filters
     ema_trend_filter_trend_up=enriched_final.ema_trend_filter_trend_up,
     ema_trend_filter_trend_down=enriched_final.ema_trend_filter_trend_down,
     long_term_bias_trend_up=enriched_final.long_term_bias_trend_up,
     long_term_bias_trend_down=enriched_final.long_term_bias_trend_down,
+    # MACD
     macd_signal=enriched_final.macd_signal,
+    # Risk / directional
     risk_adj_ret=enriched_final.risk_adj_ret,
     long_signal=enriched_final.long_signal,
     short_signal=enriched_final.short_signal,
+    # RSI
     rsi_timing=enriched_final.rsi_timing,
-    pct_change=enriched_final.pct_change
+    # Temporal features
+    hour=enriched_final.hour,
+    day_of_week=enriched_final.day_of_week,
+    day_of_month=enriched_final.day_of_month,
+    month=enriched_final.month,
+    quarter=enriched_final.quarter,
+    year=enriched_final.year,
+    hour_sin=enriched_final.hour_sin,
+    hour_cos=enriched_final.hour_cos,
+    day_sin=enriched_final.day_sin,
+    day_cos=enriched_final.day_cos,
+    month_sin=enriched_final.month_sin,
+    month_cos=enriched_final.month_cos,
+    # Lagged returns and rolling volatility
+    ret_1=enriched_final.ret_1,
+    ret_2=enriched_final.ret_2,
+    ret_3=enriched_final.ret_3,
+    ret_6=enriched_final.ret_6,
+    vol_10=enriched_final.vol_10,
 )
 
 # ============================================================================
@@ -884,35 +1087,11 @@ final_table = enriched_final.select(
 # ============================================================================
 # Write enriched technical analysis data to Kafka topics for downstream consumers
 
-# Prepare timestamp output for synchronization/coordination purposes
-# This is a separate topic that may be used by other services for timing
-logger.info("Preparing timestamp output for Kafka topic 'stock_timestamp'")
-timestamp_output = quotes.select(
-    quotes.timestamp  # Just the timestamp string, no key
-)
-
-# Write timestamp to separate Kafka topic
-# Format: raw (plain string) for simple timestamp forwarding
-try:
-    logger.info(f"Configuring Kafka writer for topic 'stock_timestamp' (broker: {kafka_broker})")
-    pw.io.kafka.write(
-        timestamp_output,
-        {
-            "bootstrap.servers": kafka_broker,
-            "group.id": "pathway-group-timestamp",
-        },
-        topic_name="stock_timestamp",
-        format="raw",  # Use "raw" format to send plain strings
-    )
-    logger.info("Kafka writer configured for 'stock_timestamp' topic")
-except Exception as e:
-    logger.error(f"Failed to configure Kafka writer for 'stock_timestamp': {str(e)}", exc_info=True)
-    raise
-
 # Write final enriched table with all technical indicators to Kafka
 # This is the main output topic containing all calculated metrics
 try:
     logger.info(f"Configuring Kafka writer for topic 'stock_calculation_table' (broker: {kafka_broker})")
+    # final_table += pw.debug.compute_and_print()
     pw.io.kafka.write(
         final_table,
         rdkafka_settings={
