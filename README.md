@@ -78,15 +78,6 @@ The objective of this project is to create a system capable of:
                          │
                          ▼
                     Predictions
-                         │
-                         ▼
-                ┌─────────────────────┐
-                │  Backend Service    │
-                │ Firebase Alerts     │
-                └────────┬────────────┘
-                         │
-                         ▼
-                     End User
 ```
 
 ---
@@ -104,7 +95,6 @@ The objective of this project is to create a system capable of:
 
 ### Additional Services
 
-* Firebase Cloud Messaging (FCM)
 * Logging Infrastructure
 
 ---
@@ -177,19 +167,7 @@ The service consists of 2 models:
 
 to estimate future intraday price movement.
 
----
-
-### Backend Service
-
-Responsible for notification delivery.
-
-**Functions:**
-
-* Consumes prediction outputs
-* Detects significant signals
-* Sends alerts through Firebase Cloud Messaging
-
-Alerts are generated whenever the model predicts a price movement exceeding configured thresholds.
+Alerts are generated when the Big Move and Up/Down predictions exceed a certain threshold
 
 ---
 
@@ -235,7 +213,7 @@ Generated from financial news:
 
 The prediction engine uses:
 
-* **XGBoost**
+* 2 **XGBoost** models
 
 The model receives both technical and sentiment features and predicts future intraday price movement.
 
@@ -249,8 +227,7 @@ The model receives both technical and sentiment features and predicts future int
 4. News Service generates sentiment features.
 5. Decision Service performs model inference.
 6. Predictions are stored and published.
-7. Backend Service sends trading alerts.
-8. Data is persisted in ClickHouse for analysis.
+7. Data is persisted in ClickHouse for analysis.
 
 ---
 
@@ -261,7 +238,6 @@ Several XGBoost models were trained and evaluated using historical market and se
 - Real-time feature generation
 - Streaming inference pipelines
 - Integration of technical and sentiment signals
-- Automated alert generation
 
 ---
 
@@ -269,7 +245,6 @@ Several XGBoost models were trained and evaluated using historical market and se
 
 ```text
 .
-├── backend/
 ├── calc_service/
 ├── decision_service/
 ├── infra/
@@ -390,8 +365,6 @@ Expected tables:
 
 ```text
 final_table
-kafka_input
-mv_kafka_to_final
 sentiment_stream
 ```
 
@@ -424,16 +397,6 @@ sudo docker compose up
 The services may be started in any order, but **Stock Service should be started last**.
 
 Recommended order:
-
-### Backend Service
-
-```bash
-python3 main.py
-```
-
-Logs will be written to the logs directory.
-
----
 
 ### Calculation Service
 
