@@ -8,12 +8,7 @@ Built using **Python**, **Pathway**, **Kafka**, **ClickHouse**, and **XGBoost**.
 
 ## Overview
 
-Financial markets generate massive amounts of information every second. Traders often struggle to continuously monitor:
-
-* Live stock price movements
-* Technical indicators
-* Breaking financial news
-* Market sentiment changes
+Financial markets generate massive amounts of information every second. 
 
 By the time information is manually gathered, analyzed, and acted upon, potential trading opportunities may already be gone.
 
@@ -30,7 +25,6 @@ These sources include:
 * Historical price movements
 * Technical indicators
 * News articles
-* Market sentiment
 
 Manually monitoring and combining these data streams in real time is difficult and inefficient.
 
@@ -45,40 +39,7 @@ The objective of this project is to create a system capable of:
 
 ## System Architecture
 
-```text
-                   ┌──────────────────┐
-                   │  Stock Service   │
-                   └────────┬─────────┘
-                            │
-                            ▼
-                     Kafka Topics
-                            │
-                            ▼
-                ┌─────────────────────┐
-                │ Calculation Service │
-                │   (Pathway Stream)  │
-                └────────┬────────────┘
-                         │
-                         ▼
-                Technical Indicators
-                         │
-                         ▼
-                ┌─────────────────────┐
-                │    News Service     │
-                └────────┬────────────┘
-                         │
-                         ▼
-                  Sentiment Features
-                         │
-                         ▼
-                ┌─────────────────────┐
-                │  Decision Service   │
-                │  XGBoost Inference  │
-                └────────┬────────────┘
-                         │
-                         ▼
-                    Predictions
-```
+<img width="2983" height="1980" alt="Final_Architecture" src="https://github.com/user-attachments/assets/49402f5f-67c5-409c-86eb-68a624844b6d" />
 
 ---
 
@@ -107,8 +68,9 @@ Responsible for market data ingestion.
 
 **Functions:**
 
-* Streams stock market data
-* Publishes events to Kafka
+* Replays the 5-min stock market data stored in a CSV file
+* Publishes it to Kafka topic "stock_price_data"
+* Publishes the timestamp of current stock ticker to Kafka topic "stock_timestamp"
 * Acts as the primary data source for downstream services
 
 The data streamed can be accessed through this link: https://www.kaggle.com/datasets/anuneetgupta1610/high-frequency-stock-market-data
@@ -121,18 +83,18 @@ Built using Pathway's streaming computation engine.
 
 **Functions:**
 
-* Consumes market data streams
+* Consumes market data streams from Kafka topic "stock_price_data"
 * Computes technical indicators
 * Performs rolling aggregations
-* Generates feature streams
+* Publishes the calculated metrics to Kafka topic "stock_metrics"
 
-**Example Features:**
+**Features:**
 
-* Returns
+* Lagging Returns
 * Moving averages
 * Volatility metrics
 * Momentum indicators
-* Price-based statistical features
+* Time-based statistical features
 
 ---
 
@@ -142,11 +104,23 @@ Processes financial news streams.
 
 **Functions:**
 
-* Consumes incoming news events
-* Performs sentiment analysis
-* Generates sentiment scores
-* Publishes sentiment features
-* Merges the sentiment features with feature data, applying decaying logic
+* Uses AlphaVantage API to fetch news as well as sentiment scores, based on stock symbol and time duration
+* Consumes the timestamp from Kafka topic "stock_timestamp"
+* Fetches news sentiment twice a day, once at the starting of trading day (14:30), and once at the end (20:55)
+* For each fetch, a window of 10 days is considered, ending at current time
+* If the current timestamp is neither 14:30, nor 20:55, then the latest news for that symbol is taken
+* The news fetched is stored in ClickHouse table "sentiment_stream"
+* Decay weighted-average sentiment is calculated per stock, using the latest news fetched. (Formula given below)
+```text
+Decay_i = e^(-hours_since_i / τ)     (τ = decay constant)
+
+WeightedAvg = Σ(Sentiment_i × Relevance_i × Decay_i)
+              --------------------------------------
+                      Σ(Relevance_i × Decay_i)
+```
+* Consumes the stock market features from Kafka topic "stock_metrics"
+* Merges the stock market features with the decay weighted-average sentiment values
+* Publishes the final stock and news data to Kafka topic "metrics_data"
 
 ---
 
@@ -156,7 +130,7 @@ Hosts the machine learning inference engine.
 
 **Functions:**
 
-* Consumes technical features and sentiment features
+* Consumes technical features and sentiment features from Kafka topic "metrics_data"
 * Runs trained XGBoost models
 * Produces trading predictions
 
@@ -167,7 +141,12 @@ The service consists of 2 models:
 
 to estimate future intraday price movement.
 
-Alerts are generated when the Big Move and Up/Down predictions exceed a certain threshold
+Alerts are generated when the Big Move and Up/Down predictions exceed the following threshold:
+```text
+* Probability of (|%age change| > 20%) > 0.35
+   AND
+* Probability of price going up > 53% OR < 42%
+```
 
 ---
 
@@ -202,10 +181,7 @@ Generated from historical market data:
 
 Generated from financial news:
 
-* Sentiment scores
-* News impact indicators
-* Aggregated sentiment signals
-* Decaying sentiment across time
+* Decay weighted-average sentiment scores
 
 ---
 
@@ -233,11 +209,52 @@ The model receives both technical and sentiment features and predicts future int
 
 ## Model Evaluation
 
-Several XGBoost models were trained and evaluated using historical market and sentiment data. While the predictive performance remains modest (which is expected for short-horizon market forecasting), the project successfully demonstrates:
+Several XGBoost models were trained and evaluated using historical market and sentiment data. 
+
+The up/down prediction model achieved:
+- Accuracy: 51.43%
+- F1 Score: 64.56%
+- ROC AUC: 50.47%
+
+The big move predictor model achieved: 
+- Accuracy: 83.03%
+- F1 Score: 38.82%
+- ROC AUC: 82.68%
+
+While the predictive performance remains modest (which is expected for short-horizon market forecasting), the project successfully demonstrates:
 
 - Real-time feature generation
 - Streaming inference pipelines
 - Integration of technical and sentiment signals
+
+---
+
+## Performance Metrics
+
+Average end-to-end latency: ~3.5 sec
+
+Computing rolling windows for feature calculation acccounts for almost 95% of the end-to-end latency.
+
+---
+
+## Design Choices
+
+Why Kafka?
+
+- Decouples producers and consumers
+- Fault tolerance
+- Scalable event streaming
+
+Why Pathway?
+
+- Real-time streaming computations
+- Native support for rolling aggregations
+- Lower complexity than custom stream processing
+
+Why ClickHouse?
+
+- Fast analytical queries
+- Efficient columnar storage
 
 ---
 
