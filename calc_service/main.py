@@ -10,7 +10,7 @@ This service performs real-time technical analysis on stock market data:
 - Trading signal generation based on multiple indicators
 
 Input: Kafka topic 'stock_price_data' with stock quote data
-Output: Kafka topic 'stock_calculation_table' with enriched technical indicators
+Output: Kafka topic 'stock_metrics' with enriched technical indicators
 """
 
 import pathway as pw
@@ -1090,19 +1090,19 @@ final_table = enriched_final.select(
 # Write final enriched table with all technical indicators to Kafka
 # This is the main output topic containing all calculated metrics
 try:
-    logger.info(f"Configuring Kafka writer for topic 'stock_calculation_table' (broker: {kafka_broker})")
+    logger.info(f"Configuring Kafka writer for topic 'stock_metrics' (broker: {kafka_broker})")
     # final_table += pw.debug.compute_and_print()
     pw.io.kafka.write(
         final_table,
         rdkafka_settings={
             "bootstrap.servers": kafka_broker,
         },
-        topic_name="stock_calculation_table",
+        topic_name="stock_metrics",
         format="json",  # JSON format for structured data
     )
-    logger.info("Kafka writer configured for 'stock_calculation_table' topic")
+    logger.info("Kafka writer configured for 'stock_metrics' topic")
 except Exception as e:
-    logger.error(f"Failed to configure Kafka writer for 'stock_calculation_table': {str(e)}", exc_info=True)
+    logger.error(f"Failed to configure Kafka writer for 'stock_metrics': {str(e)}", exc_info=True)
     raise
 
 # ============================================================================
