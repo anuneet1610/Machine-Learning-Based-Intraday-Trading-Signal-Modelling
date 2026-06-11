@@ -14,7 +14,7 @@ This module combines two microservices into a single unified pipeline:
 
 2. StockSentimentMerger (stock_sentiment_merger)
    - Consumes stock technical indicator records from Kafka topic
-     'stock_calculation_table'
+     'stock_metrics'
    - Enriches each record with the latest sentiment from the shared
      SentimentStore (written directly by NewsIngestionService — no ClickHouse
      lookup needed)
@@ -62,7 +62,7 @@ TARGET_TICKERS     = ["AAPL", "TSLA", "NVDA", "JPM", "JNJ"]
 SENTIMENT_MODEL_NAME  = "KernAI/stock-news-distilbert"
 SENTIMENT_BATCH_SIZE  = 32
 
-MERGER_INPUT_TOPIC  = "stock_calculation_table"
+MERGER_INPUT_TOPIC  = "stock_metrics"
 MERGER_OUTPUT_TOPIC = "metrics_data"
 
 # Exponential time-decay half-life for sentiment scores (in hours).
